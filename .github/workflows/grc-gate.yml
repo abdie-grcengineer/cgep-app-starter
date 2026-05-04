@@ -1,0 +1,205 @@
+######################################################################
+# GRC Gate — the capstone's centerpiece.
+#
+# Five named steps, in order, per the capstone brief:
+#   1. Plan the Terraform.
+#   2. Policy check with Conftest.
+#   3. Apply on merge to main.
+#   4. Sign the evidence bundle with Cosign (keyless via GitHub OIDC).
+#   5. Upload the signed bundle to the evidence vault from Layer 1.
+#
+# How the gate works:
+#   - On a pull_request: steps 1 + 2 only. Plan must succeed AND
+#     conftest must pass for the gate to be green. If conftest
+#     fails, the PR cannot merge: that is the gate firing closed.
+#   - On a push to main: all five steps run. Apply takes the
+#     already-validated plan and executes it; sign + upload then
+#     produce the immutable, audit-grade evidence record.
+#
+# What "evidence bundle" contains:
+#   - tfplan.json (the declarative state proposed for this run)
+#   - conftest-results.json (every policy decision)
+#   - The bundle itself is a signed, SHA-256-recomputable, immutably
+#     stored artifact under Object Lock.
+#
+# Verification (what a grader / auditor runs):
+#   cosign verify-blob \
+#     --bundle  evidence-bundle.cosign.bundle \
+#     --certificate-identity-regexp \
+#       'https://github.com/abdie-grcengineer/cgep-app-starter/\.github/workflows/grc-gate\.yml@refs/heads/main' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     evidence-bundle.tar.gz
+#
+# HIPAA mapping:
+#   - 164.312(b)        Audit Controls
+#   - 164.312(c)(1)     Integrity (Cosign signature + Sigstore log)
+#   - 164.312(d)        Person/Entity Authentication (OIDC, no keys)
+#   - 164.308(a)(1)     Security Management Process
+######################################################################
+name: GRC Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# OIDC requires `id-token: write`. The runner exchanges the JWT for
+# AWS STS credentials (via the configure-aws-credentials action) and
+# for a Sigstore signing certificate (via cosign keyless).
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::871695561491:role/acme-health-intake-gh-actions
+  TF_VERSION: 1.6.6
+  CONFTEST_VERSION: 0.55.0
+
+jobs:
+  grc-gate:
+    name: GRC Gate (5-step pipeline)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Install Conftest
+        run: |
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ conftest
+          conftest --version
+
+      - name: Install Cosign
+        # Cosign only needed on apply path. On PRs we don't sign anything.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.0'
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          # Tag the assumed-role session with the workflow run so
+          # CloudTrail entries are easy to trace back.
+          role-session-name: grc-gate-${{ github.run_id }}
+
+      ################################################################
+      # 1) Terraform Plan
+      ################################################################
+      - name: 1) Terraform Plan
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          terraform plan -out=tfplan -input=false -no-color | tee plan.txt
+          terraform show -json tfplan > tfplan.json
+
+      ################################################################
+      # 2) Policy Check (Conftest)
+      #
+      # `--all-namespaces` makes Conftest evaluate every package
+      # under ./policies, so all five sub-package rego files
+      # (compliance.hipaa.s3, .dynamodb, .s3_tls, .s3_versioning,
+      # .iam) fire. If ANY deny rule fires across any of them, this
+      # step exits non-zero and the gate fails closed.
+      ################################################################
+      - name: 2) Policy Check (Conftest)
+        run: |
+          # pipefail so conftest's non-zero exit propagates through
+          # tee/jq and fails the step. Without pipefail the exit
+          # status of the pipeline would be jq's (always 0 on valid
+          # JSON), masking gate failures.
+          set -o pipefail
+          conftest test \
+            --all-namespaces \
+            --policy ./policies \
+            terraform/tfplan.json \
+            --output json \
+          | tee conftest-results.json \
+          | jq
+
+      ################################################################
+      # 3) Terraform Apply (push to main only)
+      ################################################################
+      - name: 3) Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        working-directory: terraform
+        run: |
+          terraform apply -input=false -auto-approve tfplan | tee apply.txt
+
+      ################################################################
+      # 4) Sign evidence bundle (push to main only)
+      #
+      # Cosign keyless signing uses the GitHub OIDC token to
+      # authenticate to Sigstore. Sigstore mints an ephemeral
+      # X.509 cert whose subject names this workflow run, signs the
+      # blob with that cert, and writes an entry to the Rekor
+      # transparency log. The .cosign.bundle file contains the
+      # certificate + signature + Rekor inclusion proof; that is
+      # the artifact a grader uses with `cosign verify-blob`.
+      ################################################################
+      - name: 4) Sign evidence bundle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p artifacts
+          cp terraform/tfplan.json   artifacts/
+          cp terraform/plan.txt      artifacts/
+          cp terraform/apply.txt     artifacts/
+          cp conftest-results.json   artifacts/
+
+          tar -czf evidence-bundle.tar.gz -C artifacts .
+          sha256sum evidence-bundle.tar.gz | tee evidence-bundle.sha256
+
+          # Cosign keyless: GitHub OIDC token authenticates this run
+          # to Sigstore Fulcio (which mints a short-lived X.509
+          # certificate naming the workflow path + commit), then
+          # writes a Rekor transparency-log entry. --bundle packages
+          # the cert + signature + Rekor inclusion proof into one
+          # file, which is what the verifier consumes.
+          cosign sign-blob --yes \
+            --bundle evidence-bundle.cosign.bundle \
+            evidence-bundle.tar.gz
+
+      ################################################################
+      # 5) Upload signed bundle to evidence vault
+      #
+      # The vault has Object Lock COMPLIANCE / 90 days set as the
+      # bucket default, so each uploaded object inherits 90-day
+      # immutability automatically. No extra flag is needed on the
+      # PUT to make that happen.
+      ################################################################
+      - name: 5) Upload signed bundle to evidence vault
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          BUCKET=$(cd terraform && terraform output -raw evidence_bucket)
+          TS=$(date -u +%Y%m%dT%H%M%SZ)
+          PREFIX="runs/${TS}-${GITHUB_SHA::8}"
+
+          aws s3 cp evidence-bundle.tar.gz          "s3://${BUCKET}/${PREFIX}/evidence-bundle.tar.gz"
+          aws s3 cp evidence-bundle.sha256          "s3://${BUCKET}/${PREFIX}/evidence-bundle.sha256"
+          aws s3 cp evidence-bundle.cosign.bundle   "s3://${BUCKET}/${PREFIX}/evidence-bundle.cosign.bundle"
+
+          echo "## Evidence bundle uploaded" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo "Bucket: \`${BUCKET}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Path:   \`${PREFIX}/\`" >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo "Verify with:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "aws s3 cp s3://${BUCKET}/${PREFIX}/evidence-bundle.tar.gz ." >> $GITHUB_STEP_SUMMARY
+          echo "aws s3 cp s3://${BUCKET}/${PREFIX}/evidence-bundle.cosign.bundle ." >> $GITHUB_STEP_SUMMARY
+          echo "cosign verify-blob --bundle evidence-bundle.cosign.bundle \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --certificate-identity-regexp 'https://github\\.com/abdie-grcengineer/cgep-app-starter/.*' \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  evidence-bundle.tar.gz" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

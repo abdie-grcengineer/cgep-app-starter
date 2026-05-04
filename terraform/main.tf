@@ -13,6 +13,23 @@ terraform {
     random  = { source = "hashicorp/random", version = "~> 3.6" }
     archive = { source = "hashicorp/archive", version = "~> 2.4" }
   }
+
+  # Remote state in the bucket provisioned by tfstate.tf. Backend
+  # config cannot reference variables/locals, so the bucket name is
+  # hardcoded (the random_id.suffix it embeds is stable as long as
+  # we don't destroy + recreate the random_id resource).
+  #
+  # Migration: this block was added AFTER `terraform apply` had
+  # already created the bucket and lock table with local state.
+  # `terraform init -migrate-state` moved state into S3.
+  backend "s3" {
+    bucket         = "acme-health-intake-tfstate-3d0ff7d6"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "acme-health-intake-tfstate-lock-3d0ff7d6"
+    encrypt        = true
+    kms_key_id     = "alias/acme-health-evidence"
+  }
 }
 
 provider "aws" {
@@ -111,8 +128,17 @@ resource "aws_dynamodb_table" "intake" {
     type = "S"
   }
 
-  # No server_side_encryption block. Defaults to AWS-owned key.
-  # GAP-02: capstone learner expected to add this with a customer-owned key.
+  # GAP-02 closure (capstone hardening override).
+  #
+  # AWS DynamoDB has no sibling encryption-configuration resource the
+  # way S3 does, so the SSE block has to live inline on the table.
+  # We reuse aws_kms_key.app — same PHI workload trust boundary as the
+  # S3 uploads bucket (Design Decision D-01 in WRITEUP.md).
+  # Maps to HIPAA 164.312(a)(2)(iv) Encryption.
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.app.arn
+  }
 }
 
 ######################################################################
@@ -167,7 +193,18 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# GAP-07: deliberately broad permissions on the workload data stores.
+# GAP-07 closure (capstone hardening override).
+#
+# Wildcards were the highest-impact finding in the starter:
+# dynamodb:* on the table grants DeleteTable, UpdateTable, etc., and
+# s3:* on the bucket grants DeleteBucket and PutBucketPolicy. A
+# Lambda compromise (bad dependency, SSRF) would inherit the power
+# to wipe the table or rewrite the bucket policy to make objects
+# public. Reduced to the exact actions handler.py performs:
+#   dynamodb.put_item()  -> dynamodb:PutItem
+#   s3.put_object()      -> s3:PutObject
+# If the handler ever needs to read or delete, expand explicitly.
+# HIPAA mapping: 164.312(a)(1) Access Control (minimum necessary).
 resource "aws_iam_role_policy" "lambda_inline" {
   name = "intake-data-access"
   role = aws_iam_role.lambda.id
@@ -177,13 +214,13 @@ resource "aws_iam_role_policy" "lambda_inline" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = "dynamodb:*"
+        Action   = ["dynamodb:PutItem"]
         Resource = aws_dynamodb_table.intake.arn
       },
       {
         Effect   = "Allow"
-        Action   = "s3:*"
-        Resource = ["${aws_s3_bucket.uploads.arn}", "${aws_s3_bucket.uploads.arn}/*"]
+        Action   = ["s3:PutObject"]
+        Resource = ["${aws_s3_bucket.uploads.arn}/*"]
       }
     ]
   })
