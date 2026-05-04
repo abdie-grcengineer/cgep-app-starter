@@ -128,15 +128,55 @@ resource "aws_kms_key" "evidence" {
         }
         Action   = "kms:*"
         Resource = "*"
-      }
+      },
+      {
+        # CloudTrail must be able to generate envelope keys to
+        # encrypt its log files at rest. The EncryptionContext
+        # condition scopes this grant to ONLY trails in this
+        # account: a CloudTrail trail in any other account
+        # cannot use this key, even if it somehow obtained the
+        # key ARN. AWS sets the encryption context automatically
+        # on every trail-driven KMS call.
+        Sid    = "AllowCloudTrailEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action = [
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+        Condition = {
+          StringLike = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
+          }
+        }
+      },
+      {
+        # CloudTrail also needs Decrypt to validate its own
+        # generated keys during log file validation. Same
+        # encryption-context scope.
+        Sid    = "AllowCloudTrailDecryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "kms:Decrypt"
+        Resource = "*"
+        Condition = {
+          StringLike = {
+            "kms:EncryptionContext:aws:cloudtrail:arn" = "arn:aws:cloudtrail:*:${data.aws_caller_identity.current.account_id}:trail/*"
+          }
+        }
+      },
       # Layer 3 will append:
       #   - GitHub Actions OIDC role: kms:GenerateDataKey
-      #     (for encrypting the signed bundle on upload)
+      #     (for encrypting signed bundles on upload)
       #   - Verifier role: kms:Decrypt
       #     (for the grader and auditors to verify bundles)
-      # Until then the only principal able to use the key is the
-      # account root, which is correct: nothing in the workload should
-      # touch this key.
+      # Until then the only NON-service principal able to use this
+      # key is the account root.
     ]
   })
 

@@ -21,6 +21,16 @@ We provision two customer-managed KMS keys with distinct trust boundaries:
 
 Both CMKs use the maximum `deletion_window_in_days = 30`. A deleted key cannot be recovered after the window closes, which means PHI encrypted under it becomes permanently unreadable. The 30-day window provides the longest possible reconsideration period at no incremental cost.
 
+### D-06: CloudTrail logs are encrypted with the evidence CMK, not a third dedicated key
+
+CloudTrail's log files are encrypted at rest under `aws_kms_key.evidence`, the same CMK that protects the pipeline-signed bundles. We deliberately did not create a third CloudTrail-dedicated CMK.
+
+**Why.** Both artifact classes share a trust boundary: they are both audit-tier records of what happened in the system, both are read by the same auditor/grader audience, and neither is touched by the workload Lambda. Adding a third CMK would create an additional key policy to maintain and a third surface to monitor for rotation, with no change in the actual security posture. The evidence CMK's policy was extended to grant `cloudtrail.amazonaws.com` `kms:GenerateDataKey*` and `kms:Decrypt`, scoped via the `kms:EncryptionContext:aws:cloudtrail:arn` condition to ONLY trails inside this account. A confused-deputy attempt by a CloudTrail trail in a different account would fail.
+
+**Trade-off accepted.** A future requirement to retire the evidence CMK (e.g., compliance-driven rotation policy) would mean migrating BOTH evidence bundles AND CloudTrail to a successor key. With separate keys we could rotate one without the other. We accept this as a low-probability future cost in exchange for present-day operational simplicity.
+
+**Why CloudTrail's bucket has no Object Lock.** The brief requires Object Lock only on the evidence vault. CloudTrail provides its own integrity mechanism via log file validation: every hour the service writes a digest file containing SHA-256 hashes of the log files plus a digital signature over the chain. Object Lock on top would add tamper-resistance, but nothing in our threat model is improved by stacking the two: a tamper attempt is already detected by a hash recomputation, and an attacker who can defeat LFV (i.e., can rewrite the signed digest in S3) is sophisticated enough that bucket-level immutability does not move the needle. Documented choice rather than oversight.
+
 ### D-05: Evidence vault uses COMPLIANCE-mode Object Lock with 90-day default retention
 
 The evidence vault (`aws_s3_bucket.evidence`) ships with `aws_s3_bucket_object_lock_configuration.evidence` set to `mode = "COMPLIANCE"` and `days = 90`.
@@ -57,7 +67,9 @@ The brief's required Layer 1 components, in order of completion:
 | Customer-managed KMS keys with rotation | done | Two keys per D-01: `aws_kms_key.app` (workload PHI), `aws_kms_key.evidence` (audit) |
 | Hardening overrides for ≥5 starter gaps | done | 5 gaps closed across L1+L2 (GAP-01, 02, 03, 04, 07) |
 | S3 evidence bucket with Object Lock | done | `aws_s3_bucket.evidence` with COMPLIANCE/90 (D-05), versioning, SSE-KMS via evidence CMK, TLS-deny, full BPA |
-| CloudTrail (multi-region, log-file-validation) | pending | Next |
+| CloudTrail (multi-region, log-file-validation) | done | `aws_cloudtrail.main`: multi-region, LFV enabled, KMS-encrypted with evidence CMK (D-06). Dedicated trail bucket with the same hardening pattern as the evidence vault, minus Object Lock (LFV provides integrity already). |
+
+**Layer 1 complete.** All four required components shipped, all hardening overrides for ≥5 starter gaps in place, all opa policies passing, primary framework declared and traceable.
 
 ## Gap closure log
 
@@ -143,6 +155,24 @@ $ aws s3 ls s3://acme-health-intake-evidence-3d0ff7d6/ --endpoint-url http://s3.
 ```
 
 Five properties confirmed: Object Lock enabled in COMPLIANCE mode with 90-day default retention; encryption with the evidence CMK (distinct from the workload CMK, per D-01); versioning enabled (required by Object Lock); public access fully blocked; TLS-only traffic enforced. The evidence CMK ARN ends in `2bb5dbe4-...`, different from the workload CMK ARN (`009f191c-...`), demonstrating the trust-boundary separation declared in D-01.
+
+CloudTrail verification (run on 2026-05-03 after apply):
+
+```
+$ aws cloudtrail describe-trails --trail-name-list <trail-arn>
+{
+    "Name": "acme-health-intake-3d0ff7d6",
+    "IsMultiRegion": true,
+    "LogFileValidation": true,
+    "KMSKeyId": "arn:aws:kms:us-east-1:871695561491:key/2bb5dbe4-...",  (evidence CMK)
+    "Bucket": "acme-health-intake-cloudtrail-3d0ff7d6"
+}
+
+$ aws cloudtrail get-trail-status --name <trail-arn>
+{ "IsLogging": true, "LatestDeliveryError": null }
+```
+
+Three properties critical for HIPAA 164.312(b) Audit Controls and 164.312(c)(1) Integrity confirmed: multi-region coverage (so future expansions do not silently log nothing), log file validation (cryptographic tamper-evidence via SHA-256 digest chains), and KMS encryption under our evidence CMK (D-06). The trail's bucket is dedicated per the brief and hardened with the same pattern as the evidence vault (versioning, SSE-KMS, BPA, TLS-deny), minus Object Lock which would be redundant with LFV.
 
 ## What we didn't get to
 
