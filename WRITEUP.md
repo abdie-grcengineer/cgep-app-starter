@@ -21,6 +21,27 @@ We provision two customer-managed KMS keys with distinct trust boundaries:
 
 Both CMKs use the maximum `deletion_window_in_days = 30`. A deleted key cannot be recovered after the window closes, which means PHI encrypted under it becomes permanently unreadable. The 30-day window provides the longest possible reconsideration period at no incremental cost.
 
+### D-08: Pipeline IAM role uses AdministratorAccess for the lab; production would scope tightly
+
+The GitHub Actions role (`acme-health-intake-gh-actions`) has the AWS-managed `AdministratorAccess` policy attached. We made this trade-off deliberately: getting the GRC gate pattern (plan → policy → apply → sign → upload) running end-to-end is the centerpiece of the capstone, and shaving `terraform apply` permissions to exactly the actions Terraform invokes is a multi-day exercise that would not change the gate's behavior.
+
+**What production would do differently.**
+
+1. **Split the role.** A read-only role for PRs (plan + state read) and an apply role for push-to-main (plan + apply + state write). The apply role's trust policy would condition on `ref:refs/heads/main` so PR runs cannot escalate.
+2. **Replace AdministratorAccess** with a curated allow-list enumerating only the `s3:*`, `kms:*`, `iam:*`, etc., that this Terraform stack genuinely needs.
+3. **Add a permissions boundary** so the apply role cannot create a new role or policy outside the boundary.
+4. **Limit the trust-policy `sub` further** from `repo:abdie-grcengineer/cgep-app-starter:*` to `repo:.../environment:prod` or per-branch, depending on environment model.
+
+The capstone does NOT do these because the demo value is the gate firing, not the IAM-shaving. Documented rather than hand-waved.
+
+### D-07: GitHub OIDC trust pinned to one repo, wildcard on context
+
+The pipeline role's trust policy uses `StringLike` on the OIDC `sub` claim with the value `repo:abdie-grcengineer/cgep-app-starter:*`. The wildcard at the end deliberately allows ANY context (push branch, pull_request, environment) under THIS specific repo to assume the role.
+
+**Why one repo with a context wildcard.** GitHub's OIDC `sub` claim format is `repo:<owner>/<repo>:<context>` where `<context>` differs across event types (push from a branch, pull_request from a fork, environment-scoped runs). Pinning the repo while leaving the context open is the smallest scope that still allows the GRC gate workflow to run on both PRs (gate-only) and pushes-to-main (full sequence). A different repo, even with the same workflow file, cannot impersonate this one.
+
+**Trade-off accepted.** A workflow file that gets deleted from this repo and added to a forked branch (a malicious-fork-PR scenario) could trigger this role, since `pull_request` events run against the head ref. The mitigations in production would be (a) require approval before workflow runs from forks, configurable in GitHub repo settings; (b) scope the workflow to the upstream `pull_request_target` event with explicit branch restrictions. Documented as future work.
+
 ### D-06: CloudTrail logs are encrypted with the evidence CMK, not a third dedicated key
 
 CloudTrail's log files are encrypted at rest under `aws_kms_key.evidence`, the same CMK that protects the pipeline-signed bundles. We deliberately did not create a third CloudTrail-dedicated CMK.
@@ -70,6 +91,37 @@ The brief's required Layer 1 components, in order of completion:
 | CloudTrail (multi-region, log-file-validation) | done | `aws_cloudtrail.main`: multi-region, LFV enabled, KMS-encrypted with evidence CMK (D-06). Dedicated trail bucket with the same hardening pattern as the evidence vault, minus Object Lock (LFV provides integrity already). |
 
 **Layer 1 complete.** All four required components shipped, all hardening overrides for ≥5 starter gaps in place, all opa policies passing, primary framework declared and traceable.
+
+## Layer 3 progress
+
+The GRC gate workflow lives at [.github/workflows/grc-gate.yml](.github/workflows/grc-gate.yml). Five named steps in order:
+
+1. **Plan** — `terraform init + plan + show -json` to produce `tfplan.json`
+2. **Policy check** — Conftest evaluates every package in `./policies` against the plan JSON. Pipefail propagates conftest's exit code through the `tee | jq` pipeline so a deny rule actually fails the step. Both human-readable and JSON outputs captured.
+3. **Apply** — gated by `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`. PR runs never reach this step.
+4. **Sign** — Cosign keyless signing using GitHub OIDC. The runner exchanges its workflow JWT for a Sigstore Fulcio-issued ephemeral X.509 certificate naming this exact workflow path and commit, signs the bundle blob, and writes a Rekor transparency-log entry. The `--bundle` artifact contains the cert + signature + Rekor inclusion proof for offline verification.
+5. **Upload** — bundle, SHA-256, and Cosign bundle written to the evidence vault under `runs/<utc-timestamp>-<commit-prefix>/`. Object Lock COMPLIANCE/90 retention applies automatically by bucket default.
+
+Pipeline supporting infra:
+
+| Component | File | Purpose |
+|---|---|---|
+| Terraform S3 backend | `terraform/tfstate.tf` | versioned, KMS-encrypted (evidence CMK), DynamoDB-locked |
+| GitHub OIDC role | `terraform/oidc.tf` | `acme-health-intake-gh-actions`, trust policy pinned to `repo:abdie-grcengineer/cgep-app-starter:*` (D-07) |
+| Evidence CMK grant | `terraform/kms.tf` | role gets `kms:GenerateDataKey*` + `Decrypt` for bundle encryption |
+
+Two PRs gated by the workflow remain to be pushed to satisfy the brief's "two PRs in repo history" requirement: one green (passes the gate, merges, evidence bundle produced), one red (intentionally re-introduces a closed gap, gate fires, PR blocked). Those will be added once the workflow is verified end-to-end via the first push.
+
+Verification command for graders:
+
+```
+cosign verify-blob \
+  --bundle evidence-bundle.cosign.bundle \
+  --certificate-identity-regexp \
+    'https://github\.com/abdie-grcengineer/cgep-app-starter/\.github/workflows/grc-gate\.yml@refs/heads/main' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  evidence-bundle.tar.gz
+```
 
 ## Gap closure log
 

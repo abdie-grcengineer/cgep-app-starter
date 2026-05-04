@@ -170,13 +170,27 @@ resource "aws_kms_key" "evidence" {
           }
         }
       },
-      # Layer 3 will append:
-      #   - GitHub Actions OIDC role: kms:GenerateDataKey
-      #     (for encrypting signed bundles on upload)
-      #   - Verifier role: kms:Decrypt
-      #     (for the grader and auditors to verify bundles)
-      # Until then the only NON-service principal able to use this
-      # key is the account root.
+      {
+        # GitHub Actions pipeline (Layer 3): the role assumed via
+        # OIDC needs to encrypt signed bundles on upload to the
+        # evidence vault, and read the terraform.tfstate file
+        # (also encrypted with this CMK).
+        Sid    = "AllowGitHubActionsRoleUseOfKey"
+        Effect = "Allow"
+        Principal = {
+          AWS = aws_iam_role.gh_actions.arn
+        }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+      },
+      # Future addition: a verifier role with kms:Decrypt only,
+      # used by the grader and human auditors to verify signed
+      # bundles. Not in scope for the capstone submission.
     ]
   })
 

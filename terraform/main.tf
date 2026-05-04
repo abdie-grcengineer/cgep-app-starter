@@ -13,6 +13,23 @@ terraform {
     random  = { source = "hashicorp/random", version = "~> 3.6" }
     archive = { source = "hashicorp/archive", version = "~> 2.4" }
   }
+
+  # Remote state in the bucket provisioned by tfstate.tf. Backend
+  # config cannot reference variables/locals, so the bucket name is
+  # hardcoded (the random_id.suffix it embeds is stable as long as
+  # we don't destroy + recreate the random_id resource).
+  #
+  # Migration: this block was added AFTER `terraform apply` had
+  # already created the bucket and lock table with local state.
+  # `terraform init -migrate-state` moved state into S3.
+  backend "s3" {
+    bucket         = "acme-health-intake-tfstate-3d0ff7d6"
+    key            = "terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "acme-health-intake-tfstate-lock-3d0ff7d6"
+    encrypt        = true
+    kms_key_id     = "alias/acme-health-evidence"
+  }
 }
 
 provider "aws" {
