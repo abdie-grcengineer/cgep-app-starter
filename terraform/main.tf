@@ -213,8 +213,13 @@ resource "aws_iam_role_policy" "lambda_inline" {
     Version = "2012-10-17"
     Statement = [
       {
+        # DEMO: deliberately re-introduces GAP-07 to show that the
+        # GRC gate blocks this PR. The Rego policy
+        # iam_no_wildcards (compliance.hipaa.iam) fires on the
+        # "dynamodb:*" wildcard. This commit is intended to be
+        # closed-without-merge, not merged.
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem"]
+        Action   = "dynamodb:*"
         Resource = aws_dynamodb_table.intake.arn
       },
       {
