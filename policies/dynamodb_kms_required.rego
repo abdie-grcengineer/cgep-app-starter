@@ -28,11 +28,17 @@ import future.keywords.in
 # Helpers
 ############################################################
 
-# Set of DynamoDB table addresses being created in this plan.
+# Plan-action filter. Catches creates AND in-place updates so we
+# also fire on a PR that re-introduces a non-compliant config on
+# an existing table (the original "create only" check missed this).
+is_create_or_update(change) if "create" in change.change.actions
+is_create_or_update(change) if "update" in change.change.actions
+
+# Set of DynamoDB table addresses being created or updated.
 dynamodb_tables_created contains addr if {
 	some change in input.resource_changes
 	change.type == "aws_dynamodb_table"
-	"create" in change.change.actions
+	is_create_or_update(change)
 	addr := change.address
 }
 

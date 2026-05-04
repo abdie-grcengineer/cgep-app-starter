@@ -132,3 +132,17 @@ test_bucket_with_wrong_policy_is_denied if {
 test_bucket_with_backwards_condition_is_denied if {
 	count(deny) == 1 with input as build_plan(backwards_condition_policy_json)
 }
+
+# Regression test for the create-only-blind-spot bug: an UPDATE on
+# an existing bucket without a TLS-deny policy resource must fire.
+test_existing_bucket_updated_without_tls_deny_is_denied if {
+	update_plan := {
+		"resource_changes": [{
+			"address": "aws_s3_bucket.uploads",
+			"type": "aws_s3_bucket",
+			"change": {"actions": ["update"]},
+		}],
+		"configuration": {"root_module": {"resources": []}},
+	}
+	count(deny) == 1 with input as update_plan
+}

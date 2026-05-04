@@ -33,6 +33,13 @@ import future.keywords.in
 # Helpers
 ############################################################
 
+# Plan-action filter. Catches creates AND in-place updates. The
+# original "create only" version of this policy missed updates,
+# which let a PR re-introduce a wildcard on an existing IAM policy
+# resource without firing the gate.
+is_create_or_update(change) if "create" in change.change.actions
+is_create_or_update(change) if "update" in change.change.actions
+
 # Returns true if any character in the string is the wildcard "*".
 # Catches both "*" (super-admin) and "<service>:*" (service-wide).
 contains_wildcard(action) if {
@@ -61,7 +68,7 @@ action_set(stmt) := result if {
 wildcard_violations contains violation if {
 	some change in input.resource_changes
 	change.type in {"aws_iam_role_policy", "aws_iam_policy"}
-	"create" in change.change.actions
+	is_create_or_update(change)
 
 	# Parse the rendered policy JSON. If references inside the
 	# jsonencode were unknown at plan time the policy field is null

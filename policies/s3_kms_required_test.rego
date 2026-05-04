@@ -129,3 +129,18 @@ test_sse_s3_bucket_is_denied if {
 test_sse_kms_without_cmk_is_denied if {
 	count(deny) == 1 with input as sse_kms_no_key_plan
 }
+
+# Regression test for the create-only-blind-spot bug: an existing
+# bucket whose plan action is "update" with no SSE-KMS sibling
+# should still fire the deny.
+test_existing_bucket_updated_without_sse_is_denied if {
+	update_plan := {
+		"resource_changes": [{
+			"address": "aws_s3_bucket.uploads",
+			"type": "aws_s3_bucket",
+			"change": {"actions": ["update"]},
+		}],
+		"configuration": {"root_module": {"resources": []}},
+	}
+	count(deny) == 1 with input as update_plan
+}

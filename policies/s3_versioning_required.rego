@@ -26,11 +26,17 @@ import future.keywords.in
 # Helpers
 ############################################################
 
+# Plan-action filter. Catches creates AND in-place updates so we
+# also fire on a PR that re-introduces non-compliance on an
+# existing resource (the original "create only" check missed this).
+is_create_or_update(change) if "create" in change.change.actions
+is_create_or_update(change) if "update" in change.change.actions
+
 # Set of S3 bucket addresses being created in the plan.
 s3_buckets_created contains addr if {
 	some change in input.resource_changes
 	change.type == "aws_s3_bucket"
-	"create" in change.change.actions
+	is_create_or_update(change)
 	addr := change.address
 }
 
@@ -40,7 +46,7 @@ buckets_with_versioning_enabled contains bucket_addr if {
 	# Step 1: find an aws_s3_bucket_versioning being created.
 	some change in input.resource_changes
 	change.type == "aws_s3_bucket_versioning"
-	"create" in change.change.actions
+	is_create_or_update(change)
 
 	# Step 2: resolve which bucket via the configuration block.
 	some cfg in input.configuration.root_module.resources

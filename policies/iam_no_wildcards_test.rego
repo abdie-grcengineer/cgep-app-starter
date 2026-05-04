@@ -111,3 +111,18 @@ test_wildcard_inside_deny_passes if {
 test_aws_iam_policy_resource_type_also_inspected if {
 	count(deny) == 1 with input as build_plan("aws_iam_policy", service_wildcard_policy_json)
 }
+
+# Regression test: the bug discovered in PR #2 was that the policy
+# only checked "create" and missed "update". A PR that edits an
+# EXISTING IAM policy to re-introduce a wildcard must fire the deny.
+test_wildcard_re_introduced_via_update_is_denied if {
+	update_plan := {"resource_changes": [{
+		"address": "aws_iam_role_policy.lambda_inline",
+		"type": "aws_iam_role_policy",
+		"change": {
+			"actions": ["update"],
+			"after": {"policy": service_wildcard_policy_json},
+		},
+	}]}
+	count(deny) == 1 with input as update_plan
+}
