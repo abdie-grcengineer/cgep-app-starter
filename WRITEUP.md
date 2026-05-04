@@ -21,6 +21,12 @@ We provision two customer-managed KMS keys with distinct trust boundaries:
 
 Both CMKs use the maximum `deletion_window_in_days = 30`. A deleted key cannot be recovered after the window closes, which means PHI encrypted under it becomes permanently unreadable. The 30-day window provides the longest possible reconsideration period at no incremental cost.
 
+### D-04: Least-privilege actions derived from real handler code, not anticipated future use
+
+The starter's wildcards (`dynamodb:*`, `s3:*`) were replaced with the exact actions `handler.py` performs today: `dynamodb:PutItem` and `s3:PutObject`. We deliberately did NOT pre-grant `dynamodb:GetItem` or `s3:GetObject` "in case we add reads later." HIPAA 164.312(a)(1) requires minimum-necessary access, and "we might need this someday" is the failure mode that produces wildcards in the first place.
+
+**Trade-off accepted.** When the workload genuinely needs new actions (a query API, a download endpoint), the IAM policy must be updated in the same PR as the handler change. This forces a security review every time the data-access surface widens, which is what the control is for. The cost is a slightly noisier change history; the benefit is that no IAM grant exists without a code path to justify it.
+
 ### D-03: Hardening pattern depends on what the AWS provider exposes
 
 The capstone aims to keep the starter file (`terraform/main.tf`) recognizable so a grader can diff against the upstream and see exactly what we added. We follow that rule where the AWS provider lets us, and break it where it doesn't.
@@ -40,6 +46,7 @@ The capstone aims to keep the starter file (`terraform/main.tf`) recognizable so
 | GAP-02 (DynamoDB CMK) | done | done | pending | Inline `server_side_encryption` block added to `aws_dynamodb_table.intake` in `main.tf` (D-03 pattern). Reuses workload CMK from GAP-01 (D-01 single-workload-CMK). No new IAM needed: existing `aws_iam_role_policy.lambda_kms_workload` already grants `kms:Decrypt`/`GenerateDataKey` on the same key. Policy `policies/dynamodb_kms_required.rego` enforces, 4/4 tests pass. Verified live: `describe-table` shows `SSEType: KMS`, `KMSMasterKeyArn` = workload CMK ARN. |
 | GAP-03 (S3 TLS-deny) | done | done | pending | `aws_s3_bucket_policy.uploads_tls_only` appended to `hardening_uploads.tf` (sibling-resource pattern). Statement: `Effect=Deny, Principal=*, Action=s3:*, Condition Bool aws:SecureTransport=false`. Policy `policies/s3_tls_required.rego` enforces, 4/4 tests pass (compliant case + 3 distinct misconfigurations: no policy, public-read, backwards condition). Verified live: identical authenticated HeadObject over HTTPS succeeds, over HTTP returns 403 Forbidden. |
 | GAP-04 (S3 versioning) | done | done | pending | `aws_s3_bucket_versioning.uploads` appended to `hardening_uploads.tf` with `status = "Enabled"`. Policy `policies/s3_versioning_required.rego` enforces, 3/3 tests pass (compliant case + 2 misconfigurations: no resource, status=Suspended). No lifecycle rule for noncurrent-version expiry: defeats recovery intent and would need its own design decision. Verified live: `aws s3api get-bucket-versioning` returns `Status: Enabled`. |
+| GAP-07 (IAM wildcards) | done | done | pending | Inline edit on `main.tf` (D-03 pattern; the wildcards live inside the starter's `aws_iam_role_policy.lambda_inline`, can't be overridden from a sibling file). `dynamodb:*` -> `["dynamodb:PutItem"]`. `s3:*` -> `["s3:PutObject"]` (and resource scoped to `bucket/*`, dropping the bucket-level ARN since PutObject only acts on objects). Derived from handler.py: it does only `put_item` and `put_object`. Policy `policies/iam_no_wildcards.rego` (sub-package `compliance.hipaa.iam`) enforces, 6/6 tests pass (compliant + service-wildcard + super-admin + mixed-list + Deny-wildcard-allowed + aws_iam_policy resource type). Verified live: API call with attachment succeeds, `dynamodb:PutItem` and `s3:PutObject` both work, object lands SSE-KMS-encrypted. |
 
 (Table grows as gaps close.)
 

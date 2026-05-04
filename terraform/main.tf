@@ -176,7 +176,18 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# GAP-07: deliberately broad permissions on the workload data stores.
+# GAP-07 closure (capstone hardening override).
+#
+# Wildcards were the highest-impact finding in the starter:
+# dynamodb:* on the table grants DeleteTable, UpdateTable, etc., and
+# s3:* on the bucket grants DeleteBucket and PutBucketPolicy. A
+# Lambda compromise (bad dependency, SSRF) would inherit the power
+# to wipe the table or rewrite the bucket policy to make objects
+# public. Reduced to the exact actions handler.py performs:
+#   dynamodb.put_item()  -> dynamodb:PutItem
+#   s3.put_object()      -> s3:PutObject
+# If the handler ever needs to read or delete, expand explicitly.
+# HIPAA mapping: 164.312(a)(1) Access Control (minimum necessary).
 resource "aws_iam_role_policy" "lambda_inline" {
   name = "intake-data-access"
   role = aws_iam_role.lambda.id
@@ -186,13 +197,13 @@ resource "aws_iam_role_policy" "lambda_inline" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = "dynamodb:*"
+        Action   = ["dynamodb:PutItem"]
         Resource = aws_dynamodb_table.intake.arn
       },
       {
         Effect   = "Allow"
-        Action   = "s3:*"
-        Resource = ["${aws_s3_bucket.uploads.arn}", "${aws_s3_bucket.uploads.arn}/*"]
+        Action   = ["s3:PutObject"]
+        Resource = ["${aws_s3_bucket.uploads.arn}/*"]
       }
     ]
   })
