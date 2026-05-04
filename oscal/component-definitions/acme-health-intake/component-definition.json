@@ -1,0 +1,252 @@
+{
+  "component-definition": {
+    "uuid": "aaee68f4-5e52-462a-b77d-bad521b5761d",
+    "metadata": {
+      "title": "Acme Health Patient Intake API — GRC Component (HIPAA Security Rule)",
+      "last-modified": "2026-05-04T03:30:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.2",
+      "roles": [
+        {
+          "id": "system-owner",
+          "title": "System Owner"
+        },
+        {
+          "id": "grc-engineer",
+          "title": "GRC Engineer"
+        }
+      ],
+      "parties": [
+        {
+          "uuid": "4f53ca64-22a1-4566-87a9-643a5077c4fe",
+          "type": "organization",
+          "name": "Acme Health"
+        }
+      ]
+    },
+    "components": [
+      {
+        "uuid": "72583666-b770-4aaf-bd6f-800d2877bd9a",
+        "type": "service",
+        "title": "Acme Health Patient Intake API",
+        "description": "Telehealth patient intake API workload (Lambda + API Gateway HTTP + DynamoDB + S3) wrapped with Terraform-, Rego-, and pipeline-enforced controls for HIPAA Security Rule compliance. Built as the CGE-P capstone over the cgep-app-starter scaffold.",
+        "purpose": "Accept, persist, and audit patient intake submissions in compliance with the HIPAA Security Rule technical and administrative safeguards, with cryptographic chain-of-custody for every change.",
+        "responsible-roles": [
+          {
+            "role-id": "system-owner",
+            "party-uuids": ["4f53ca64-22a1-4566-87a9-643a5077c4fe"]
+          }
+        ],
+        "control-implementations": [
+          {
+            "uuid": "6e8b3780-5387-436f-a6ab-23810edf1a7b",
+            "source": "https://csrc.nist.gov/pubs/sp/800/66/r2/final",
+            "description": "Implementation of HIPAA Security Rule technical and administrative safeguards (45 CFR 164.308 and 164.312) as guided by NIST SP 800-66 Rev. 2 (Implementing the HIPAA Security Rule). HIPAA itself does not publish an OSCAL catalog; per industry practice the source URL points at NIST SP 800-66 Rev. 2 and each implemented requirement carries the canonical 164.x citation as a prop.",
+            "implemented-requirements": [
+              {
+                "uuid": "5a122b23-4999-4eb6-8d59-228f7b5d80f2",
+                "control-id": "hipaa-164.312-a-2-iv",
+                "description": "Encryption at rest for ePHI under customer-controlled keys. The S3 uploads bucket and DynamoDB submissions table are both encrypted with aws_kms_key.app, a customer-managed CMK with rotation enabled. The evidence vault and Terraform state bucket are encrypted with a separate aws_kms_key.evidence per the dual-CMK trust-boundary design (D-01 in WRITEUP.md). Enforced at plan time by policies/s3_kms_required.rego and policies/dynamodb_kms_required.rego (4 + 4 unit tests).",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(a)(2)(iv)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_kms_key.app"},
+                  {"name": "terraform-resource", "value": "aws_kms_key.evidence"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_server_side_encryption_configuration.uploads"},
+                  {"name": "terraform-resource", "value": "aws_dynamodb_table.intake"},
+                  {"name": "rego-policy", "value": "compliance.hipaa.s3"},
+                  {"name": "rego-policy", "value": "compliance.hipaa.dynamodb"},
+                  {"name": "gap-closed", "value": "GAP-01"},
+                  {"name": "gap-closed", "value": "GAP-02"}
+                ],
+                "links": [
+                  {
+                    "href": "https://github.com/abdie-grcengineer/cgep-app-starter/blob/main/terraform/kms.tf",
+                    "rel": "reference",
+                    "text": "Terraform CMK definitions"
+                  },
+                  {
+                    "href": "s3://acme-health-intake-evidence-3d0ff7d6/runs/",
+                    "rel": "evidence",
+                    "text": "Signed pipeline bundles in the evidence vault"
+                  }
+                ]
+              },
+              {
+                "uuid": "1bd075ca-63d0-47a8-bd8e-4f001e02c375",
+                "control-id": "hipaa-164.312-e-1",
+                "description": "Transmission Security: every workload-managed S3 bucket (uploads, evidence, CloudTrail logs, Terraform state) carries a bucket policy with an aws:SecureTransport=false Deny statement, refusing any plain-HTTP request at the data plane regardless of caller. Enforced at plan time by policies/s3_tls_required.rego (4 unit tests, including a test that catches the common 'backwards condition' typo).",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(e)(1)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_policy.uploads_tls_only"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_policy.evidence_tls_only"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_policy.cloudtrail"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_policy.tfstate_tls_only"},
+                  {"name": "rego-policy", "value": "compliance.hipaa.s3_tls"},
+                  {"name": "gap-closed", "value": "GAP-03"}
+                ],
+                "links": [
+                  {
+                    "href": "https://github.com/abdie-grcengineer/cgep-app-starter/blob/main/terraform/hardening_uploads.tf",
+                    "rel": "reference"
+                  }
+                ]
+              },
+              {
+                "uuid": "0aeb71af-a003-4ff6-b1f5-503e8eae413e",
+                "control-id": "hipaa-164.308-a-7",
+                "description": "Contingency Plan: data backup and recoverability for ePHI object storage. Every workload-managed S3 bucket has versioning enabled, so individual object PUT/DELETE is recoverable. The evidence vault adds Object Lock in COMPLIANCE mode with 90-day default retention, making signed audit artifacts immutable for the retention window (D-05). Enforced at plan time by policies/s3_versioning_required.rego (3 unit tests).",
+                "props": [
+                  {"name": "framework-control", "value": "164.308(a)(7)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_versioning.uploads"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_versioning.evidence"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_versioning.cloudtrail"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_versioning.tfstate"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket_object_lock_configuration.evidence"},
+                  {"name": "rego-policy", "value": "compliance.hipaa.s3_versioning"},
+                  {"name": "gap-closed", "value": "GAP-04"}
+                ]
+              },
+              {
+                "uuid": "6c2beec7-c01b-4a33-8c15-2b9567c60aa0",
+                "control-id": "hipaa-164.312-a-1",
+                "description": "Access Control: minimum-necessary principle on the workload runtime IAM. The Lambda's data-access inline policy is scoped to dynamodb:PutItem and s3:PutObject only, derived directly from handler.py's two API calls (D-04). Wildcards are rejected by policies/iam_no_wildcards.rego (compliance.hipaa.iam, 7 unit tests including a regression test for the create-only-blind-spot bug fixed in PR #3).",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(a)(1)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_iam_role_policy.lambda_inline"},
+                  {"name": "terraform-resource", "value": "aws_iam_role_policy.lambda_kms_workload"},
+                  {"name": "rego-policy", "value": "compliance.hipaa.iam"},
+                  {"name": "gap-closed", "value": "GAP-07"}
+                ],
+                "links": [
+                  {
+                    "href": "https://github.com/abdie-grcengineer/cgep-app-starter/pull/4",
+                    "rel": "reference",
+                    "text": "Red PR demonstrating the gate blocks wildcard re-introduction"
+                  }
+                ]
+              },
+              {
+                "uuid": "8f41b99c-8271-4ed8-9aed-f826aa5a2362",
+                "control-id": "hipaa-164.312-b",
+                "description": "Audit Controls: complete record of activity in systems containing ePHI. AWS CloudTrail captures every management-event API call, multi-region, with log file validation (SHA-256 hash chain + signed digest every hour) and KMS encryption under the evidence CMK (D-06). The evidence vault itself is the audit-log surface for change management: every push to main produces a signed, SHA-256-hashed, immutably-stored bundle containing the plan, conftest results, and apply log.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(b)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_cloudtrail.main"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket.cloudtrail"},
+                  {"name": "terraform-resource", "value": "aws_s3_bucket.evidence"},
+                  {"name": "github-workflow", "value": ".github/workflows/grc-gate.yml"}
+                ],
+                "links": [
+                  {
+                    "href": "s3://acme-health-intake-cloudtrail-3d0ff7d6/AWSLogs/",
+                    "rel": "evidence",
+                    "text": "CloudTrail log file location"
+                  },
+                  {
+                    "href": "s3://acme-health-intake-evidence-3d0ff7d6/runs/",
+                    "rel": "evidence",
+                    "text": "Signed change-management evidence bundles"
+                  }
+                ]
+              },
+              {
+                "uuid": "0fb668a4-de3e-48e0-8242-42a4fe33f26e",
+                "control-id": "hipaa-164.312-c-1",
+                "description": "Integrity: cryptographic tamper-evidence for the change-management chain of custody. Two independent mechanisms hold: (1) CloudTrail log file validation produces an hourly SHA-256 digest signed by AWS, detecting any post-write modification of historical log files; (2) every evidence bundle in the vault is signed by Cosign keyless using the GitHub Actions OIDC token, with the certificate, signature, and Rekor inclusion proof recorded in Sigstore's public transparency log. A grader can verify either mechanism offline.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(c)(1)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_cloudtrail.main"},
+                  {"name": "github-workflow-step", "value": "4) Sign evidence bundle"},
+                  {"name": "tool", "value": "cosign sign-blob (keyless via GitHub OIDC)"},
+                  {"name": "transparency-log", "value": "Sigstore Rekor"}
+                ],
+                "links": [
+                  {
+                    "href": "https://github.com/abdie-grcengineer/cgep-app-starter/blob/main/.github/workflows/grc-gate.yml",
+                    "rel": "reference",
+                    "text": "Workflow including the cosign sign-blob step"
+                  }
+                ]
+              },
+              {
+                "uuid": "185a56f8-d828-4ad8-9140-d3a1fc17a61b",
+                "control-id": "hipaa-164.312-d",
+                "description": "Person or Entity Authentication: no static AWS credentials are used by the GRC pipeline. The GitHub Actions runner authenticates via OpenID Connect, exchanging its workflow JWT for a short-lived STS session via the role acme-health-intake-gh-actions, whose trust policy is pinned via StringLike on token.actions.githubusercontent.com:sub to repo:abdie-grcengineer/cgep-app-starter:* (D-07). Every assumed-role session is cryptographically tied to a specific workflow run.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(d)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_iam_role.gh_actions"},
+                  {"name": "terraform-data-source", "value": "data.aws_iam_openid_connect_provider.github"},
+                  {"name": "trust-claim", "value": "repo:abdie-grcengineer/cgep-app-starter:*"}
+                ]
+              },
+              {
+                "uuid": "c0672ab8-0884-4487-b54f-fc967e041106",
+                "control-id": "hipaa-164.308-a-4",
+                "description": "Information Access Management: workforce member and service principal access is restricted to the minimum necessary. The Lambda runtime role has only PutItem/PutObject on the workload data stores plus Decrypt/GenerateDataKey on the workload CMK. The evidence CMK explicitly omits the Lambda role from its key policy, so a workload compromise cannot reach audit artifacts (D-01). The pipeline role uses AdministratorAccess for the lab; production hardening to a curated allow-list is documented in WRITEUP.md D-08.",
+                "props": [
+                  {"name": "framework-control", "value": "164.308(a)(4)"},
+                  {"name": "implementation-status", "value": "partial"},
+                  {"name": "terraform-resource", "value": "aws_iam_role_policy.lambda_inline"},
+                  {"name": "terraform-resource", "value": "aws_iam_role_policy.lambda_kms_workload"},
+                  {"name": "terraform-resource", "value": "aws_kms_key.evidence"},
+                  {"name": "design-decision", "value": "D-01 dual-CMK trust boundary"},
+                  {"name": "design-decision", "value": "D-08 pipeline role scope (lab vs production)"}
+                ]
+              },
+              {
+                "uuid": "a0fa175d-6c78-4c3a-87e8-87f25cd5ec33",
+                "control-id": "hipaa-164.308-a-1-ii-D",
+                "description": "Information system activity review: CloudTrail multi-region capture means an audit reviewer can examine the full account-wide API history at any time. The trail's logs are tamper-evident via log file validation and KMS-encrypted at rest under the evidence CMK. The evidence vault complements this with workflow-level activity (every change merged to main has a signed bundle).",
+                "props": [
+                  {"name": "framework-control", "value": "164.308(a)(1)(ii)(D)"},
+                  {"name": "implementation-status", "value": "implemented"},
+                  {"name": "terraform-resource", "value": "aws_cloudtrail.main"},
+                  {"name": "cloudtrail-property", "value": "is_multi_region_trail=true"},
+                  {"name": "cloudtrail-property", "value": "enable_log_file_validation=true"}
+                ]
+              },
+              {
+                "uuid": "4c1ff58e-b8e9-4b46-920f-8e47d22db899",
+                "control-id": "hipaa-164.312-e-1-boundary",
+                "description": "Boundary protection (Lambda in VPC). The starter's Lambda runs in the default Lambda execution environment, not in the starter's VPC private subnets (GAP-05, NOT closed in this submission). A Lambda compromise can therefore reach the public internet without traversing security groups or NACLs we control. Planned remediation: add vpc_config to aws_lambda_function.intake referencing aws_subnet.private[*] and a hardened security group, plus VPC endpoints for DynamoDB and S3 to keep PHI traffic off the public internet entirely.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(e)(1)"},
+                  {"name": "implementation-status", "value": "planned"},
+                  {"name": "gap-not-closed", "value": "GAP-05"},
+                  {"name": "rationale", "value": "Out of scope for the 30-day capstone window; planned for the next sprint per WRITEUP.md."}
+                ]
+              },
+              {
+                "uuid": "73e39a08-471a-4bba-8590-a0abf189f9d2",
+                "control-id": "hipaa-164.312-b-tracing",
+                "description": "Application-level audit tracing for ePHI workload requests. The Lambda has no AWS X-Ray active tracing, no DLQ, and no reserved concurrency (GAP-06, NOT closed). A request that silently fails or is starved by a noisy neighbor cannot be replayed or attributed today. Planned remediation: add tracing_config { mode = \"Active\" }, a dead_letter_config pointing at an SQS queue, and reserved_concurrent_executions set to a sensible per-environment value.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(b)"},
+                  {"name": "implementation-status", "value": "planned"},
+                  {"name": "gap-not-closed", "value": "GAP-06"}
+                ]
+              },
+              {
+                "uuid": "b09a2c47-f0ee-416e-bd78-4a9eb6568082",
+                "control-id": "hipaa-164.312-b-edge",
+                "description": "Edge-layer audit and abuse-prevention. The starter's API Gateway stage has no access logging, no throttling, and no WAF (GAP-08, NOT closed). Without access logs the question 'who submitted patient record X at 2am' has no answer at the edge tier. Planned remediation: add access_log_settings on aws_apigatewayv2_stage.default pointing at a CloudWatch Logs group, default_route_settings with sensible burst and rate limits, and an aws_wafv2_web_acl_association for L7 filtering.",
+                "props": [
+                  {"name": "framework-control", "value": "164.312(b)"},
+                  {"name": "implementation-status", "value": "planned"},
+                  {"name": "gap-not-closed", "value": "GAP-08"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

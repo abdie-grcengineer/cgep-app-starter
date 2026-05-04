@@ -1,0 +1,41 @@
+{
+  "profile": {
+    "uuid": "0e8b995e-dfb8-407e-be5b-be8f988fb8fe",
+    "metadata": {
+      "title": "Acme Health Patient Intake API — HIPAA Security Rule Profile",
+      "last-modified": "2026-05-04T03:30:00Z",
+      "version": "1.0.0",
+      "oscal-version": "1.1.2",
+      "parties": [
+        {
+          "uuid": "4f53ca64-22a1-4566-87a9-643a5077c4fe",
+          "type": "organization",
+          "name": "Acme Health"
+        }
+      ]
+    },
+    "imports": [
+      {
+        "href": "https://csrc.nist.gov/pubs/sp/800/66/r2/final",
+        "include-controls": [
+          {
+            "with-ids": [
+              "hipaa-164.312-a-1",
+              "hipaa-164.312-a-2-iv",
+              "hipaa-164.312-b",
+              "hipaa-164.312-c-1",
+              "hipaa-164.312-d",
+              "hipaa-164.312-e-1",
+              "hipaa-164.308-a-7",
+              "hipaa-164.308-a-4",
+              "hipaa-164.308-a-1-ii-D"
+            ]
+          }
+        ]
+      }
+    ],
+    "merge": {
+      "as-is": true
+    }
+  }
+}
