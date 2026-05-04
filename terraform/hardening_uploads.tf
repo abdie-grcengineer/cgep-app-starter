@@ -1,8 +1,8 @@
 ######################################################################
 # Hardening overlay — S3 uploads bucket.
 #
-# This file closes GAP-01 (SSE-KMS) and GAP-03 (TLS-only access),
-# and will grow to close GAP-04 (versioning) later.
+# This file closes GAP-01 (SSE-KMS), GAP-03 (TLS-only access),
+# and GAP-04 (versioning).
 #
 # HIPAA mapping:
 #   - 164.312(a)(2)(iv) Encryption at rest (customer-controlled key)
@@ -10,6 +10,8 @@
 #                       under our account context, unlike SSE-S3)
 #   - 164.312(e)(1)     Transmission Security (no plaintext PHI on
 #                       the wire to or from this bucket)
+#   - 164.308(a)(7)     Contingency Plan (recoverability of PHI
+#                       attachments via versioning)
 ######################################################################
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
@@ -81,4 +83,34 @@ resource "aws_s3_bucket_policy" "uploads_tls_only" {
       },
     ]
   })
+}
+
+######################################################################
+# GAP-04 closure — enable versioning on the uploads bucket.
+#
+# Without versioning, a PUT to an existing key overwrites the prior
+# object with no recovery, and a DELETE is permanent. Failure modes
+# this prevents:
+#   - Buggy Lambda overwrites a patient's intake attachment
+#   - Ransomware encrypts-in-place by writing over each key
+#   - Accidental admin DELETE
+#
+# Versioning is the floor of recoverability for object stores. It is
+# not a backup strategy by itself, but HIPAA's contingency-plan
+# obligation expects at least this much for PHI object storage.
+#
+# We deliberately do NOT add a lifecycle rule to expire noncurrent
+# versions in this layer. That is a deletion policy and belongs in
+# its own decision; aggressive expiry would defeat the recovery
+# intent. Documented in WRITEUP.md if/when added.
+#
+# HIPAA mapping: 164.308(a)(7) Contingency Plan (data backup plan).
+######################################################################
+
+resource "aws_s3_bucket_versioning" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
 }
