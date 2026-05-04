@@ -1,18 +1,15 @@
 ######################################################################
 # Hardening overlay — S3 uploads bucket.
 #
-# This file closes GAP-01 (and will grow to close GAP-03 TLS-deny and
-# GAP-04 versioning when those gaps are addressed).
-#
-# What it does today:
-#   Forces the starter's aws_s3_bucket.uploads to use SSE-KMS with our
-#   customer-managed key (aws_kms_key.app), instead of the AWS-managed
-#   SSE-S3 default the starter ships with.
+# This file closes GAP-01 (SSE-KMS) and GAP-03 (TLS-only access),
+# and will grow to close GAP-04 (versioning) later.
 #
 # HIPAA mapping:
-#   - 164.312(a)(2)(iv) Encryption (PHI at rest, customer-controlled key)
-#   - 164.312(b)        Audit Controls (CMK use is logged in CloudTrail
+#   - 164.312(a)(2)(iv) Encryption at rest (customer-controlled key)
+#   - 164.312(b)        Audit Controls (CMK use logs to CloudTrail
 #                       under our account context, unlike SSE-S3)
+#   - 164.312(e)(1)     Transmission Security (no plaintext PHI on
+#                       the wire to or from this bucket)
 ######################################################################
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
@@ -38,4 +35,50 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
     # without weakening confidentiality. Best-practice default.
     bucket_key_enabled = true
   }
+}
+
+######################################################################
+# GAP-03 closure — deny any S3 request that did not arrive over TLS.
+#
+# AWS does NOT enforce HTTPS on S3 by default. Without this resource
+# policy, a misconfigured client (Lambda using an http:// URL, an SDK
+# with TLS verification disabled, an internal proxy stripping HTTPS)
+# can PUT or GET PHI in cleartext over the network. The bucket would
+# still "work" and nothing in CloudTrail would flag the issue.
+#
+# The aws:SecureTransport condition key resolves to true on HTTPS
+# requests and false on HTTP requests. Denying when it is "false"
+# refuses every plain-HTTP call before S3 reads a single byte of
+# data — the response is 403 Forbidden.
+#
+# Principal "*" is intentional. Defense in depth: even root, even
+# IAM-allowed services, even pre-signed URLs must use TLS. There is
+# no PHI workload reason to allow plaintext on the wire.
+#
+# HIPAA mapping: 164.312(e)(1) Transmission Security.
+######################################################################
+
+resource "aws_s3_bucket_policy" "uploads_tls_only" {
+  bucket = aws_s3_bucket.uploads.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.uploads.arn,
+          "${aws_s3_bucket.uploads.arn}/*",
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+    ]
+  })
 }

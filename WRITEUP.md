@@ -38,6 +38,7 @@ The capstone aims to keep the starter file (`terraform/main.tf`) recognizable so
 |---|---|---|---|---|
 | GAP-01 (S3 SSE-KMS) | done | done | pending | `kms.tf` workload CMK; `hardening_uploads.tf` wires SSE-KMS; `hardening_iam.tf` grants Lambda least-priv key access. Policy `policies/s3_kms_required.rego` enforces, 4/4 tests pass. Verified live: `head-object` shows `ServerSideEncryption: aws:kms`, `SSEKMSKeyId` = workload CMK ARN. |
 | GAP-02 (DynamoDB CMK) | done | done | pending | Inline `server_side_encryption` block added to `aws_dynamodb_table.intake` in `main.tf` (D-03 pattern). Reuses workload CMK from GAP-01 (D-01 single-workload-CMK). No new IAM needed: existing `aws_iam_role_policy.lambda_kms_workload` already grants `kms:Decrypt`/`GenerateDataKey` on the same key. Policy `policies/dynamodb_kms_required.rego` enforces, 4/4 tests pass. Verified live: `describe-table` shows `SSEType: KMS`, `KMSMasterKeyArn` = workload CMK ARN. |
+| GAP-03 (S3 TLS-deny) | done | done | pending | `aws_s3_bucket_policy.uploads_tls_only` appended to `hardening_uploads.tf` (sibling-resource pattern). Statement: `Effect=Deny, Principal=*, Action=s3:*, Condition Bool aws:SecureTransport=false`. Policy `policies/s3_tls_required.rego` enforces, 4/4 tests pass (compliant case + 3 distinct misconfigurations: no policy, public-read, backwards condition). Verified live: identical authenticated HeadObject over HTTPS succeeds, over HTTP returns 403 Forbidden. |
 
 (Table grows as gaps close.)
 
@@ -69,6 +70,18 @@ $ aws dynamodb describe-table --table-name acme-health-intake-submissions-3d0ff7
 ```
 
 In both cases the `SSEKMSKeyId` / `KMSMasterKeyArn` resolves to `aws_kms_key.app` (the workload CMK), proving that the Terraform-declared encryption configurations are enforced by AWS at the time of read/write, not just declared in code. The two resources share a single CMK by design (D-01 trust boundary). Both artifacts are candidates for inclusion in the signed evidence bundle once Layer 3 (signing pipeline) is built.
+
+End-to-end verification of GAP-03 (run on 2026-05-03 after apply):
+
+```
+Test 1: aws s3api head-object ... --endpoint-url http://s3.us-east-1.amazonaws.com
+  -> An error occurred (403) when calling the HeadObject operation: Forbidden
+
+Test 2: aws s3api head-object ... --endpoint-url https://s3.us-east-1.amazonaws.com
+  -> "ServerSideEncryption": "aws:kms"  (succeeds)
+```
+
+Same credentials, same bucket, same object, same operation. Only the transport differs. The 403 in Test 1 is the bucket policy's `aws:SecureTransport=false` deny statement firing. This is the controlled-comparison evidence that the TLS-deny is active and enforcing, not just present in the policy document. (An anonymous HTTP request also returns 403 but that test is ambiguous because S3's default public-access-block would already deny it; the authenticated comparison isolates the TLS condition.)
 
 ## What we didn't get to
 
