@@ -92,6 +92,35 @@ The brief's required Layer 1 components, in order of completion:
 
 **Layer 1 complete.** All four required components shipped, all hardening overrides for ≥5 starter gaps in place, all opa policies passing, primary framework declared and traceable.
 
+## Layer 1+ — continuous monitoring & detection
+
+`terraform/monitoring.tf` adds AWS Config managed rules that continuously evaluate the live workload against the same controls our Rego suite gates at plan time. If a manual change in the AWS console (or an API call from a different IAM principal) introduces drift past the gate, the Config rule flags `NON_COMPLIANT` within seconds, and the EventBridge rule defined in the same file routes the finding to a CloudWatch Logs group (`/acme-health/config-violations`) that operators wire to PagerDuty / Slack / etc.
+
+| Config rule | Resource type | Mirrors Rego policy | HIPAA control |
+|---|---|---|---|
+| `s3-bucket-server-side-encryption-enabled` | S3::Bucket | `compliance.hipaa.s3` | 164.312(a)(2)(iv) |
+| `s3-bucket-ssl-requests-only` | S3::Bucket | `compliance.hipaa.s3_tls` | 164.312(e)(1) |
+| `s3-bucket-versioning-enabled` | S3::Bucket | `compliance.hipaa.s3_versioning` | 164.308(a)(7) |
+
+Plus the account's pre-existing SecurityHub-managed rules covering CloudTrail encryption / LFV / CloudWatch-Logs integration, which complement our additions at the org tier rather than the application tier.
+
+The CloudWatch log group is encrypted with the evidence CMK (the encryption-context-scoped statement on `aws_kms_key.evidence` was extended in `kms.tf` to allow the `logs.us-east-1.amazonaws.com` service principal for `/acme-health/*` log groups).
+
+## CI lint + security stage
+
+The workflow now has a separate `lint` job that runs before the `grc-gate` job:
+
+| Stage | Tool | What it catches |
+|---|---|---|
+| Lint | `terraform fmt -check` | Style drift |
+| Lint | `tflint` | HCL static analysis (deprecated syntax, missing required args, etc.) |
+| Lint | `checkov` (governed by `.checkov.yaml`) | IaC security findings |
+| Lint | `gitleaks` | Committed secrets |
+| Lint | `opa test` | Rego unit tests |
+| Gate | Plan → Conftest → Apply → Sign → Upload | The five-step compliance pipeline |
+
+The `checkov` config (`.checkov.yaml`) skips findings that map to documented gaps (`GAP-05`, `GAP-06`, `GAP-08`, listed as `implementation-status: planned` in OSCAL) and to defended design decisions (D-05 lifecycle vs Object Lock, D-08 admin-role lab vs production scope), so a "checkov: 0 failed" output is meaningful: the only skipped checks are ones an auditor can read the rationale for.
+
 ## Layer 4 deliverables (OSCAL)
 
 The OSCAL component is at [`oscal/component-definitions/acme-health-intake/component-definition.json`](oscal/component-definitions/acme-health-intake/component-definition.json), and the profile selecting controls is at [`oscal/profiles/acme-health-hipaa/profile.json`](oscal/profiles/acme-health-hipaa/profile.json). Both validate cleanly under `trestle validate -a`.

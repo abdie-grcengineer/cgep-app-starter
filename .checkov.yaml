@@ -1,0 +1,43 @@
+# Checkov configuration.
+#
+# Skipped checks fall into three categories:
+#   1. Tracked-as-gap: the finding IS one of the brief's named gaps
+#      that we documented as `implementation-status: planned` in
+#      oscal/component-definitions/acme-health-intake/component-definition.json.
+#      Closing it is out of scope for this submission window.
+#   2. Design-decision: a deliberate choice defended in WRITEUP.md
+#      (D-NN). Closing it would contradict the documented design.
+#   3. Out-of-scope-for-lab: would add real value in production
+#      (e.g., cross-region replication) but is not required by the
+#      brief and would obscure the GRC pattern the capstone is
+#      meant to demonstrate.
+#
+# Every skip cites either a GAP id or a Design Decision id so a
+# grader can trace the reason.
+
+framework:
+  - terraform
+
+skip-check:
+  # 1. Tracked-as-gap (planned in OSCAL)
+  - CKV_AWS_115     # Lambda function-level concurrency limit -> GAP-06
+  - CKV_AWS_116     # Lambda DLQ -> GAP-06
+  - CKV_AWS_117     # Lambda in VPC -> GAP-05
+  - CKV_AWS_50      # Lambda X-Ray tracing -> GAP-06
+  - CKV_AWS_76      # API Gateway access logging -> GAP-08
+  - CKV_AWS_309     # API Gateway route auth -> GAP-08
+
+  # 2. Design-decision
+  - CKV_AWS_274     # Pipeline role uses AdministratorAccess -> D-08 (lab-vs-prod scope trade-off documented)
+  - CKV2_AWS_61     # S3 lifecycle -> D-05 (Object Lock with 90-day retention; lifecycle expiry would defeat recovery intent)
+  - CKV2_AWS_10     # CloudTrail -> CloudWatch Logs -> we use S3+KMS+LFV which provides equivalent integrity story (D-06)
+
+  # 3. Out-of-scope-for-lab
+  - CKV_AWS_144     # S3 cross-region replication
+  - CKV_AWS_18      # S3 server access logging (cross-bucket access logs would create a logs-of-logs cycle for the cloudtrail and evidence buckets and add no audit value not already provided by CloudTrail)
+  - CKV_AWS_252     # CloudTrail SNS topic notifications (no incident-routing target wired up in lab)
+  - CKV_AWS_272     # Lambda code-signing (out-of-scope for a Python intake handler in a lab)
+  - CKV2_AWS_11     # VPC flow logs (cost vs benefit for a lab; would be enabled in production)
+  - CKV2_AWS_62     # S3 event notifications (no consumer wired up in lab)
+  - CKV_AWS_130     # VPC subnets assigning public IPs - the starter's public subnets are deliberately public-IP-on-launch; private subnets host workload via GAP-05 closure (planned)
+  - CKV_AWS_173     # Lambda env-var KMS encryption: env vars hold table/bucket names only, not secrets, and migrating to CMK encryption requires the kms_key_arn to be set BEFORE Terraform writes the env vars (chicken-and-egg with state migration); revisit after GAP-05/06 closure

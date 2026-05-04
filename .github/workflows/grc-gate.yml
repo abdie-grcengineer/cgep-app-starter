@@ -54,13 +54,74 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ROLE_ARN: arn:aws:iam::871695561491:role/acme-health-intake-gh-actions
   TF_VERSION: 1.6.6
   CONFTEST_VERSION: 0.55.0
+  TFLINT_VERSION: v0.55.0
+  CHECKOV_VERSION: 3.2.526
 
 jobs:
+  ##################################################################
+  # Lint + security scan (no AWS access needed; runs on every event).
+  #
+  # Five fail-fast checks gate the rest of the pipeline:
+  #   - terraform fmt -check (style consistency)
+  #   - tflint (HCL static analysis)
+  #   - checkov (IaC security findings, governed by .checkov.yaml)
+  #   - gitleaks (no committed secrets)
+  #   - opa test (the rego suite's own unit tests must pass)
+  #
+  # If any of these fail the lint job, the gate job below does not
+  # start, and apply/sign/upload never run.
+  ##################################################################
+  lint:
+    name: Lint + security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform fmt -check
+        run: terraform -chdir=terraform fmt -check -diff -recursive
+
+      - name: Install tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: tflint
+        working-directory: terraform
+        run: |
+          tflint --init
+          tflint
+
+      - name: Install Checkov
+        run: pip install "checkov==${CHECKOV_VERSION}"
+
+      - name: Checkov
+        run: checkov -d terraform --config-file .checkov.yaml --quiet --compact
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: opa test
+        run: opa test ./policies -v
+
+  ##################################################################
+  # GRC Gate — the five-step compliance pipeline.
+  ##################################################################
   grc-gate:
     name: GRC Gate (5-step pipeline)
+    needs: lint
     runs-on: ubuntu-latest
 
     steps:
@@ -88,7 +149,9 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          # Role ARN comes from the repository-scoped GitHub variable
+          # AWS_ROLE_ARN, not hardcoded into the workflow file.
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
           # Tag the assumed-role session with the workflow run so
           # CloudTrail entries are easy to trace back.
@@ -127,6 +190,19 @@ jobs:
             --output json \
           | tee conftest-results.json \
           | jq
+
+      # Preserve the conftest output as a workflow artifact, in
+      # addition to including it in the signed evidence bundle. Makes
+      # the policy decision visible in the run UI for both PR and
+      # push events, even when the gate fails (which would otherwise
+      # skip the bundle-build step).
+      - name: Upload conftest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conftest-results-${{ github.run_id }}
+          path: conftest-results.json
+          retention-days: 30
 
       ################################################################
       # 3) Terraform Apply (push to main only)

@@ -1,80 +1,162 @@
-# cgep-app-starter
+# Acme Health Patient Intake API — CGE-P Capstone
 
-> Patient Intake API for "Acme Health". The deliberately-flawed workload your **CGE-P capstone** wraps with GRC controls.
+This repository is a CGE-P capstone submission. It takes the [`cgep-app-starter`](https://github.com/GRCEngClub/cgep-app-starter) workload (a deliberately under-governed telehealth Patient Intake API) and wraps it with the four GRC layers the brief calls for: a Terraform baseline, an OPA policy suite, a GitHub Actions GRC gate pipeline, and an OSCAL component-definition that ties the chain together. Primary framework is the **HIPAA Security Rule** (NIST SP 800-66 Rev. 2 cited as the OSCAL catalog).
 
-## What this is
+The complete narrative, design decisions, and trade-offs live in [`WRITEUP.md`](WRITEUP.md).
 
-A minimal AWS workload: VPC, Lambda, API Gateway, DynamoDB, S3. It ingests patient intake submissions over HTTPS. Think of it as a system you have just inherited from an engineering team and been asked to make audit-defensible.
+## What this repo demonstrates
 
-This repository ships **non-compliant on purpose**. Your job in the capstone is not to rewrite this app. Your job is to wrap it with the four CGE-P layers (Terraform GRC baseline, Rego policies, GitHub Actions evidence pipeline, OSCAL component) so the same workload becomes audit-defensible against HIPAA, SOC 2, and CMMC L2.
+- **Five HIPAA gaps closed across all three layers** (Terraform fix + Rego policy + OSCAL implementation): GAP-01 (S3 SSE-KMS), GAP-02 (DynamoDB CMK), GAP-03 (S3 TLS-deny), GAP-04 (S3 versioning), GAP-07 (IAM least privilege). Three remaining gaps (GAP-05, GAP-06, GAP-08) are documented honestly as `implementation-status: planned` in OSCAL rather than falsely marked implemented.
+- **5 OPA Rego policies, 26 unit tests, 100% pass.** Each policy is sub-packaged under `compliance.hipaa.*`, has a metadata block citing HIPAA control IDs and remediation, and detects both creates and in-place updates of non-compliant resources.
+- **Layer 1 evidence vault** (`aws_s3_bucket.evidence`) with COMPLIANCE-mode Object Lock at 90-day default retention, SSE-KMS via a dedicated `aws_kms_key.evidence`, full public access block, and TLS-deny.
+- **Multi-region CloudTrail with log-file validation**, KMS-encrypted under the evidence CMK, in a dedicated bucket.
+- **GitHub Actions GRC gate pipeline** with five named steps (Plan, Policy check, Apply, Sign, Upload). Cosign keyless signing via GitHub OIDC. Every push to `main` produces a signed, SHA-256-recomputable, immutably-stored evidence bundle in the vault.
+- **AWS Config detection layer** (`terraform/monitoring.tf`) with managed rules that continuously evaluate the live workload against the same controls our policies enforce at plan time.
+- **Two PRs in repo history** prove the gate works as designed: PR #1 merged green, PR #4 was correctly blocked red because the Rego suite caught a re-introduced wildcard. (PR #2 + PR #3 are the bug-found / bug-fixed pair that uncovered and closed a create-only blind spot in the policy suite.)
+- **OSCAL component-definition** at `oscal/component-definitions/acme-health-intake/component-definition.json` validates clean under `trestle validate -a`.
 
-## The deploy gate
+## Repository layout
 
-If you cannot deploy this starter, you cannot pass the capstone. Real GRC engineers inherit working systems. Step zero is making the system run.
+```
+.
+|-- terraform/                       # Layer 1: Terraform baseline + hardening
+|   |-- main.tf                      # the starter (resources marked GAP-NN)
+|   |-- kms.tf                       # workload + evidence CMKs (D-01)
+|   |-- evidence_vault.tf            # Object Lock COMPLIANCE/90 (D-05)
+|   |-- cloudtrail.tf                # multi-region + LFV (D-06)
+|   |-- tfstate.tf                   # remote state backend
+|   |-- oidc.tf                      # GitHub OIDC role (D-07, D-08)
+|   |-- monitoring.tf                # AWS Config managed rules
+|   |-- hardening_uploads.tf         # GAP-01, 03, 04 closures
+|   `-- hardening_iam.tf             # workload Lambda KMS access
+|-- policies/                        # Layer 2: OPA/Rego suite
+|   |-- s3_kms_required.rego         # GAP-01
+|   |-- dynamodb_kms_required.rego   # GAP-02
+|   |-- s3_tls_required.rego         # GAP-03
+|   |-- s3_versioning_required.rego  # GAP-04
+|   |-- iam_no_wildcards.rego        # GAP-07
+|   `-- *_test.rego                  # 26 unit tests, +/- fixtures
+|-- .github/workflows/
+|   `-- grc-gate.yml                 # Layer 3: 5-step pipeline
+|-- oscal/                           # Layer 4: machine-readable docs
+|   |-- component-definitions/
+|   |   `-- acme-health-intake/
+|   |       `-- component-definition.json
+|   `-- profiles/
+|       `-- acme-health-hipaa/
+|           `-- profile.json
+|-- WRITEUP.md                       # Full narrative + design decisions
+|-- README.md                        # This file
+|-- LICENSE                          # MIT (inherited from starter)
+|-- GAPS.md                          # Starter-defined gap list (untouched)
+`-- FRAMEWORKS.md                    # Starter framework primer (untouched)
+```
+
+## How to run
+
+### Prerequisites
+
+- AWS account with Administrator-equivalent permissions (the demo provisions IAM, KMS, S3, DynamoDB, Lambda, API Gateway, CloudTrail, AWS Config)
+- AWS CLI configured (`aws configure` or SSO)
+- `terraform` >= 1.6
+- `opa` (for running the Rego test suite)
+- `cosign` (only needed for verification, not for deploy)
+
+### Deploy
 
 ```bash
-git clone https://github.com/GRCEngClub/cgep-app-starter
+git clone https://github.com/abdie-grcengineer/cgep-app-starter
 cd cgep-app-starter
-
-# Confirm you're authenticated to the right account:
-make creds AWS_PROFILE=<your-sandbox-profile>
-
-make deploy AWS_PROFILE=<your-sandbox-profile>
-make test    AWS_PROFILE=<your-sandbox-profile>
+make deploy AWS_PROFILE=<your-sandbox>
+make test   AWS_PROFILE=<your-sandbox>
 ```
 
-> **AWS SSO note:** if your profile is SSO-based, Terraform's AWS provider can fail to read it directly with `failed to find SSO session section`. The Makefile's `eval $(aws configure export-credentials)` pattern handles this. If you're running `terraform` commands by hand, do the same export first.
+`make test` should return `{"submission_id": "...", "status": "received"}`. Once that succeeds the workload is up. The hardening overrides, evidence vault, CloudTrail, AWS Config, and pipeline-supporting resources are all part of the same `terraform apply`.
 
-Expected output of `make test`:
+### Run the policy suite
 
-```json
-{
-    "submission_id": "f1e3...",
-    "status": "received"
-}
+```bash
+opa test ./policies -v
 ```
 
-When you're done exploring: `make destroy`.
+Expect 26 PASS, 0 FAIL.
 
-## What you build on top
+### Validate the OSCAL
 
-Fork the repo into your own `cgep-capstone` and add:
-
-1. **Layer 1 — GRC baseline (Terraform).** KMS keys, an S3 evidence vault with Object Lock, a CloudTrail trail. Bring this starter's data stores under your CMK.
-2. **Layer 2 — OPA policy suite (Rego).** Five or more policies that catch the named gaps in [GAPS.md](GAPS.md). Each policy maps to at least one control from the framework you choose.
-3. **Layer 3 — GitHub Actions pipeline.** Plan → Conftest gate → apply → Cosign sign → upload to vault.
-4. **Layer 4 — OSCAL component.** A `component-definition.json` describing how your governed system implements its controls.
-
-Full brief: `docs/labs/07_01_capstone_brief.md` in the course content repo.
-
-## Framework mapping is required
-
-Your capstone must declare a primary framework: **HIPAA Security Rule**, **SOC 2 Trust Services Criteria**, or **CMMC Level 2**. Every policy carries at least one control ID from your chosen framework. Your OSCAL component's `control-implementations` reference your framework's catalog.
-
-A starter mapping is in [FRAMEWORKS.md](FRAMEWORKS.md). It is not the only valid mapping. You're expected to defend yours.
-
-## Cost
-
-Roughly $0 if destroyed within an hour. Lambda + API Gateway + DynamoDB + S3 are all pay-per-use, and an empty deployment generates no traffic. CloudTrail (which you add) costs cents.
-
-## Layout
-
+```bash
+pip3 install compliance-trestle
+cd oscal
+python3 -m trestle init --local   # idempotent if already initialized
+python3 -m trestle validate -a
 ```
-cgep-app-starter/
-├── README.md            # this file
-├── WORKLOAD.md          # what the API does
-├── GAPS.md              # the named flaws your policies must catch
-├── FRAMEWORKS.md        # HIPAA / SOC 2 / CMMC mapping primer
-├── Makefile             # make deploy | test | destroy
-├── terraform/
-│   ├── main.tf
-│   ├── variables.tf
-│   ├── outputs.tf
-│   └── lambda/handler.py
-└── test/
-    └── intake.sh
+
+Expect both files VALID.
+
+### Tear down
+
+```bash
+make destroy AWS_PROFILE=<your-sandbox>
 ```
+
+Note: the evidence vault has Object Lock COMPLIANCE/90 set as the bucket default. Any objects uploaded by the pipeline cannot be deleted for 90 days, so the bucket will refuse to destroy until that retention expires. This is intentional per D-05; production HIPAA would extend the retention further.
+
+## How a grader verifies a recent run
+
+The brief's three required verifications: Cosign signature, SHA-256 recompute, Object Lock retention. All three hold on every signed bundle in the vault.
+
+```bash
+# 1. Find the latest signed bundle
+BUCKET=$(cd terraform && terraform output -raw evidence_bucket)
+LATEST=$(aws s3 ls s3://$BUCKET/runs/ | tail -1 | awk '{print $2}')
+PREFIX="s3://$BUCKET/runs/${LATEST}"
+
+# 2. Pull the three artifacts
+aws s3 cp ${PREFIX}evidence-bundle.tar.gz       .
+aws s3 cp ${PREFIX}evidence-bundle.sha256       .
+aws s3 cp ${PREFIX}evidence-bundle.cosign.bundle .
+
+# 3. Cosign signature against the public Sigstore log
+cosign verify-blob \
+  --bundle evidence-bundle.cosign.bundle \
+  --certificate-identity-regexp \
+    'https://github\.com/abdie-grcengineer/cgep-app-starter/\.github/workflows/grc-gate\.yml@refs/heads/main' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  evidence-bundle.tar.gz
+
+# 4. SHA-256 recompute
+sha256sum -c evidence-bundle.sha256
+
+# 5. Object Lock retention check (must be in the future for COMPLIANCE)
+aws s3api head-object --bucket $BUCKET --key "runs/${LATEST}evidence-bundle.tar.gz" \
+  --query '{Mode:ObjectLockMode, RetainUntil:ObjectLockRetainUntilDate}'
+```
+
+Expected results:
+- Cosign: `Verified OK`
+- SHA-256: `evidence-bundle.tar.gz: OK`
+- Object Lock: `Mode=COMPLIANCE`, `RetainUntil` in the future
+
+## Control-to-code mapping
+
+The OSCAL component-definition is the canonical mapping. Every implemented requirement carries:
+
+- `framework-control` prop with the canonical 164.x HIPAA citation
+- `terraform-resource` props pointing at the Terraform addresses that satisfy the control
+- `rego-policy` prop naming the deny rule that gates it
+- `gap-closed` prop cross-referencing GAPS.md
+- `links` rel=`evidence` pointing at signed bundles in the vault
+
+The high-level mapping table also lives in [WRITEUP.md](WRITEUP.md) under "Gap closure log."
+
+## Two PRs the brief requires
+
+| # | URL | Purpose | Outcome |
+|---|---|---|---|
+| 1 | https://github.com/abdie-grcengineer/cgep-app-starter/pull/1 | Layer 1 + Layer 3 baseline | **Merged** (green) |
+| 4 | https://github.com/abdie-grcengineer/cgep-app-starter/pull/4 | Re-introduces GAP-07 wildcard | **Closed unmerged** (gate fired red, blocked) |
+
+PRs #2 and #3 are a bonus pair: #2 was a first attempt at the red demo that exposed a real bug (the Rego suite missed in-place updates); #3 fixed it with regression tests; #4 then correctly fired red on the same wildcard re-introduction.
 
 ## License
 
-MIT. Fork freely. Submissions remain learners' own work.
+MIT, inherited from the starter. See [LICENSE](LICENSE).

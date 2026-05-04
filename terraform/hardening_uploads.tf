@@ -114,3 +114,22 @@ resource "aws_s3_bucket_versioning" "uploads" {
     status = "Enabled"
   }
 }
+
+######################################################################
+# Defense-in-depth — explicit public access block on uploads.
+#
+# AWS sets BPA on by default for new buckets since 2023, but
+# auditors expect to see an aws_s3_bucket_public_access_block
+# resource declared explicitly so a Terraform reader does not have
+# to know the default. Same pattern used on every other bucket we
+# manage (evidence, cloudtrail, tfstate, config).
+######################################################################
+
+resource "aws_s3_bucket_public_access_block" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}

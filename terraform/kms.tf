@@ -188,6 +188,31 @@ resource "aws_kms_key" "evidence" {
         ]
         Resource = "*"
       },
+      {
+        # CloudWatch Logs needs envelope-key access to encrypt the
+        # /acme-health/* log groups (e.g., the AWS Config violations
+        # group from monitoring.tf). The EncryptionContext condition
+        # scopes the grant to log groups under that prefix only —
+        # any other log group in the account cannot use this key.
+        Sid    = "AllowCloudWatchLogsEncryption"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.aws_region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*",
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/acme-health/*"
+          }
+        }
+      },
       # Future addition: a verifier role with kms:Decrypt only,
       # used by the grader and human auditors to verify signed
       # bundles. Not in scope for the capstone submission.
