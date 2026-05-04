@@ -71,6 +71,21 @@ resource "aws_vpc" "main" {
   tags = { Name = "${local.name_prefix}-vpc" }
 }
 
+# Default security group hardening — AWS creates a default SG per VPC
+# that historically allowed all-egress and all-ingress within itself.
+# Even though we use named SGs everywhere, an explicit empty
+# ingress/egress here ensures any resource that accidentally falls
+# back to the default SG cannot send or receive traffic at all.
+resource "aws_default_security_group" "main" {
+  vpc_id = aws_vpc.main.id
+
+  # No ingress, no egress — empty arrays are intentional.
+  tags = {
+    Name    = "${local.name_prefix}-default-sg-locked"
+    Purpose = "deny-by-default-fallback"
+  }
+}
+
 resource "aws_subnet" "public" {
   count                   = 2
   vpc_id                  = aws_vpc.main.id
@@ -138,6 +153,14 @@ resource "aws_dynamodb_table" "intake" {
   server_side_encryption {
     enabled     = true
     kms_key_arn = aws_kms_key.app.arn
+  }
+
+  # Point-in-time recovery: AWS keeps continuous backups for 35 days
+  # so PHI submissions are recoverable from any second within that
+  # window. Maps to HIPAA 164.308(a)(7) Contingency Plan; the same
+  # control versioning addresses for S3.
+  point_in_time_recovery {
+    enabled = true
   }
 }
 

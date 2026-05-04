@@ -114,6 +114,11 @@ resource "aws_dynamodb_table" "tfstate_lock" {
     kms_key_arn = aws_kms_key.evidence.arn
   }
 
+  # NOTE: point-in-time recovery is intentionally NOT enabled on
+  # the lock table. Lock entries are transient (a few seconds) and
+  # have no data-recovery value; PITR would only add cost.
+  # checkov:skip=CKV_AWS_28:Lock table holds transient lock state, not data worth restoring
+
   tags = {
     Name      = "acme-health-tfstate-lock"
     Purpose   = "terraform-state-locking"
