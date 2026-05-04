@@ -111,8 +111,17 @@ resource "aws_dynamodb_table" "intake" {
     type = "S"
   }
 
-  # No server_side_encryption block. Defaults to AWS-owned key.
-  # GAP-02: capstone learner expected to add this with a customer-owned key.
+  # GAP-02 closure (capstone hardening override).
+  #
+  # AWS DynamoDB has no sibling encryption-configuration resource the
+  # way S3 does, so the SSE block has to live inline on the table.
+  # We reuse aws_kms_key.app — same PHI workload trust boundary as the
+  # S3 uploads bucket (Design Decision D-01 in WRITEUP.md).
+  # Maps to HIPAA 164.312(a)(2)(iv) Encryption.
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.app.arn
+  }
 }
 
 ######################################################################

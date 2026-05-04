@@ -19,7 +19,7 @@
 #     to your customer-managed KMS key ARN. See
 #     terraform/hardening_uploads.tf for the pattern.
 #   gap: GAP-01
-package compliance.hipaa.encryption
+package compliance.hipaa.s3
 
 # Modern Rego idioms (Rego v1-style). `contains` defines a rule that
 # returns a SET of values; `if` makes the rule body explicit.

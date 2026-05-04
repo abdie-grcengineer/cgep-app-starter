@@ -7,7 +7,7 @@
 # but structurally accurate to what `terraform show -json plan.tfplan`
 # emits — same field names, same nesting.
 
-package compliance.hipaa.encryption
+package compliance.hipaa.s3
 
 import future.keywords.if
 

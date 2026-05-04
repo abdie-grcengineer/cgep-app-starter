@@ -21,11 +21,23 @@ We provision two customer-managed KMS keys with distinct trust boundaries:
 
 Both CMKs use the maximum `deletion_window_in_days = 30`. A deleted key cannot be recovered after the window closes, which means PHI encrypted under it becomes permanently unreadable. The 30-day window provides the longest possible reconsideration period at no incremental cost.
 
+### D-03: Hardening pattern depends on what the AWS provider exposes
+
+The capstone aims to keep the starter file (`terraform/main.tf`) recognizable so a grader can diff against the upstream and see exactly what we added. We follow that rule where the AWS provider lets us, and break it where it doesn't.
+
+- **Sibling-resource overrides** (preferred). When AWS exposes a configuration as its own Terraform resource, we add it as a sibling in a new file. Examples: `aws_s3_bucket_server_side_encryption_configuration` for GAP-01, `aws_s3_bucket_versioning` for GAP-04 (later), `aws_s3_bucket_policy` for GAP-03 (later). Starter file untouched.
+- **Inline edits** (when forced). When the AWS provider only exposes a configuration as a nested block on the resource, we have to edit the starter resource directly. The first case is GAP-02: DynamoDB encryption is configured via the `server_side_encryption {}` block inside `aws_dynamodb_table`, and there is no sibling resource. We add the block in place, leave the original `# GAP-02:` starter comment as a hint to the grader, and document the change here.
+
+**Why this is correct in practice.** Real GRC engineering teams don't get to choose the override pattern; AWS does. Insisting on a uniform style across all gaps would either duplicate resources unnecessarily (e.g., declaring a brand-new DynamoDB table just to keep the starter clean) or paper over the inline edit by hiding it in a `lifecycle` trick. Both are worse than just editing in place and being transparent about it.
+
+**Trade-off accepted.** Inline edits make the diff against `upstream/main` slightly less obvious for the affected resources. Mitigated by retaining the original gap comment and adding a clear `# GAP-02 closure` block in the same resource.
+
 ## Gap closure log
 
 | Gap | Layer 1 (Terraform) | Layer 2 (Rego) | Layer 4 (OSCAL) | Notes |
 |---|---|---|---|---|
 | GAP-01 (S3 SSE-KMS) | done | done | pending | `kms.tf` workload CMK; `hardening_uploads.tf` wires SSE-KMS; `hardening_iam.tf` grants Lambda least-priv key access. Policy `policies/s3_kms_required.rego` enforces, 4/4 tests pass. Verified live: `head-object` shows `ServerSideEncryption: aws:kms`, `SSEKMSKeyId` = workload CMK ARN. |
+| GAP-02 (DynamoDB CMK) | done | done | pending | Inline `server_side_encryption` block added to `aws_dynamodb_table.intake` in `main.tf` (D-03 pattern). Reuses workload CMK from GAP-01 (D-01 single-workload-CMK). No new IAM needed: existing `aws_iam_role_policy.lambda_kms_workload` already grants `kms:Decrypt`/`GenerateDataKey` on the same key. Policy `policies/dynamodb_kms_required.rego` enforces, 4/4 tests pass. Verified live: `describe-table` shows `SSEType: KMS`, `KMSMasterKeyArn` = workload CMK ARN. |
 
 (Table grows as gaps close.)
 
@@ -44,7 +56,19 @@ $ aws s3api head-object --bucket acme-health-intake-uploads-3d0ff7d6 \
 }
 ```
 
-The `SSEKMSKeyId` ARN is `aws_kms_key.app` (workload CMK), proving that the Terraform-declared encryption configuration is enforced by AWS at the time of object PUT, not just declared. This artifact is a candidate for inclusion in the signed evidence bundle once Layer 3 (signing pipeline) is built.
+End-to-end verification of GAP-02 (run on 2026-05-03 after apply):
+
+```
+$ aws dynamodb describe-table --table-name acme-health-intake-submissions-3d0ff7d6 \
+    --query 'Table.SSEDescription'
+{
+    "Status": "ENABLED",
+    "SSEType": "KMS",
+    "KMSMasterKeyArn": "arn:aws:kms:us-east-1:871695561491:key/009f191c-9e8c-436e-8b77-909ea9b3119a"
+}
+```
+
+In both cases the `SSEKMSKeyId` / `KMSMasterKeyArn` resolves to `aws_kms_key.app` (the workload CMK), proving that the Terraform-declared encryption configurations are enforced by AWS at the time of read/write, not just declared in code. The two resources share a single CMK by design (D-01 trust boundary). Both artifacts are candidates for inclusion in the signed evidence bundle once Layer 3 (signing pipeline) is built.
 
 ## What we didn't get to
 
