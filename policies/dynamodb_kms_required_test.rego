@@ -101,3 +101,21 @@ test_ddb_with_aws_managed_key_is_denied if {
 test_ddb_with_explicitly_disabled_sse_is_denied if {
 	count(deny) == 1 with input as ddb_explicitly_disabled_plan
 }
+
+# Regression test for the create-only-blind-spot bug: an UPDATE on
+# an existing table that removes the SSE block must fire deny.
+test_ddb_update_without_sse_is_denied if {
+	update_plan := {
+		"resource_changes": [{
+			"address": "aws_dynamodb_table.intake",
+			"type": "aws_dynamodb_table",
+			"change": {"actions": ["update"]},
+		}],
+		"configuration": {"root_module": {"resources": [{
+			"address": "aws_dynamodb_table.intake",
+			"type": "aws_dynamodb_table",
+			"expressions": {},
+		}]}},
+	}
+	count(deny) == 1 with input as update_plan
+}

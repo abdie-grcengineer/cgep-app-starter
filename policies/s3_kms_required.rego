@@ -31,13 +31,19 @@ import future.keywords.in
 # Helpers
 ############################################################
 
+# Plan-action filter. Catches creates AND in-place updates so we
+# also fire on a PR that re-introduces non-compliance on an
+# existing resource (the original "create only" check missed this).
+is_create_or_update(change) if "create" in change.change.actions
+is_create_or_update(change) if "update" in change.change.actions
+
 # Set of S3 bucket Terraform addresses that the plan would create.
 # We only care about creates — modifications/destroys don't introduce
 # new unencrypted PHI surface.
 s3_buckets_created contains addr if {
 	some change in input.resource_changes
 	change.type == "aws_s3_bucket"
-	"create" in change.change.actions
+	is_create_or_update(change)
 	addr := change.address
 }
 
@@ -57,7 +63,7 @@ sse_kms_config_for(bucket_addr) := result if {
 		# Step 1: find an SSE config resource being created.
 		some change in input.resource_changes
 		change.type == "aws_s3_bucket_server_side_encryption_configuration"
-		"create" in change.change.actions
+		is_create_or_update(change)
 		sse_addr := change.address
 
 		# Step 2: confirm it points at THIS bucket via the

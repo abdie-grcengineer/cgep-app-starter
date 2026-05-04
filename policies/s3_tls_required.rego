@@ -29,13 +29,19 @@ import future.keywords.in
 # Helpers
 ############################################################
 
+# Plan-action filter. Catches creates AND in-place updates so we
+# also fire on a PR that re-introduces non-compliance on an
+# existing resource (the original "create only" check missed this).
+is_create_or_update(change) if "create" in change.change.actions
+is_create_or_update(change) if "update" in change.change.actions
+
 # Set of S3 bucket addresses being created in the plan. Same shape as
 # the helper in s3_kms_required.rego; redefined here because each
 # policy lives in its own sub-package for metadata isolation.
 s3_buckets_created contains addr if {
 	some change in input.resource_changes
 	change.type == "aws_s3_bucket"
-	"create" in change.change.actions
+	is_create_or_update(change)
 	addr := change.address
 }
 
@@ -49,7 +55,7 @@ buckets_with_tls_deny contains bucket_addr if {
 	# Step 1: find an aws_s3_bucket_policy being created.
 	some change in input.resource_changes
 	change.type == "aws_s3_bucket_policy"
-	"create" in change.change.actions
+	is_create_or_update(change)
 
 	# Step 2: resolve which bucket this policy is attached to via
 	# the configuration block. We DERIVE the bucket address from

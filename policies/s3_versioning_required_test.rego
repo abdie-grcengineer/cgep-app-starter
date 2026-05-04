@@ -83,3 +83,17 @@ test_no_versioning_resource_is_denied if {
 test_versioning_suspended_is_denied if {
 	count(deny) == 1 with input as versioning_suspended_plan
 }
+
+# Regression test for the create-only-blind-spot bug: an UPDATE
+# on an existing bucket without a versioning resource must fire.
+test_existing_bucket_updated_without_versioning_is_denied if {
+	update_plan := {
+		"resource_changes": [{
+			"address": "aws_s3_bucket.uploads",
+			"type": "aws_s3_bucket",
+			"change": {"actions": ["update"]},
+		}],
+		"configuration": {"root_module": {"resources": []}},
+	}
+	count(deny) == 1 with input as update_plan
+}
